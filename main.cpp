@@ -24,8 +24,9 @@ struct BPTreeNode {
     int values[ORDER];
     BPTreeNode* children[ORDER];
     BPTreeNode* next;
+    BPTreeNode* prev;     // previous leaf pointer for backward traversal
 
-    BPTreeNode(bool leaf) : is_leaf(leaf), num_keys(0), next(nullptr) {
+    BPTreeNode(bool leaf) : is_leaf(leaf), num_keys(0), next(nullptr), prev(nullptr) {
         for (int i = 0; i < ORDER; i++) {
             children[i] = nullptr;
         }
@@ -35,12 +36,15 @@ struct BPTreeNode {
 class BPTree {
 private:
     BPTreeNode* root;
+    BPTreeNode* first_leaf;   // pointer to first leaf for fast traversal
 
+    // Standard B+ tree find_leaf: uses >= so equal keys go right
+    // Returns the leaf where the key would be inserted (rightmost leaf for that key)
     BPTreeNode* find_leaf(const string& key) const {
         BPTreeNode* cur = root;
         while (!cur->is_leaf) {
             int i = 0;
-            while (i < cur->num_keys && key > cur->keys[i]) {
+            while (i < cur->num_keys && key >= cur->keys[i]) {
                 i++;
             }
             cur = cur->children[i];
@@ -141,17 +145,24 @@ private:
 
         leaf->num_keys = mid;
 
-        string promote_key = leaf->keys[leaf->num_keys - 1];
+        // Promote the FIRST key of the right (new) leaf
+        string promote_key = new_leaf->keys[0];
 
+        // Maintain linked list
         new_leaf->next = leaf->next;
+        new_leaf->prev = leaf;
+        if (leaf->next) {
+            leaf->next->prev = new_leaf;
+        }
         leaf->next = new_leaf;
 
         insert_into_parent(leaf, promote_key, new_leaf);
     }
 
 public:
-    BPTree() : root(nullptr) {
+    BPTree() : root(nullptr), first_leaf(nullptr) {
         root = new BPTreeNode(true);
+        first_leaf = root;
     }
 
     ~BPTree() {
@@ -171,6 +182,8 @@ public:
     void insert(const string& key, int value) {
         BPTreeNode* leaf = find_leaf(key);
 
+        // Check for duplicate in this leaf (should be sufficient since
+        // duplicates are inserted into the same leaf with >= convention)
         for (int i = 0; i < leaf->num_keys; i++) {
             if (leaf->keys[i] == key && leaf->values[i] == value) {
                 return;
@@ -187,21 +200,25 @@ public:
     void remove(const string& key, int value) {
         BPTreeNode* leaf = find_leaf(key);
 
-        int pos = -1;
-        for (int i = 0; i < leaf->num_keys; i++) {
-            if (leaf->keys[i] == key && leaf->values[i] == value) {
-                pos = i;
-                break;
+        // Search for the entry starting from this leaf, scanning backward
+        // since find_leaf returns the rightmost leaf for this key
+        BPTreeNode* cur = leaf;
+        while (cur) {
+            for (int i = cur->num_keys - 1; i >= 0; i--) {
+                if (cur->keys[i] == key && cur->values[i] == value) {
+                    // Found it - remove it
+                    for (int j = i; j < cur->num_keys - 1; j++) {
+                        cur->keys[j] = cur->keys[j+1];
+                        cur->values[j] = cur->values[j+1];
+                    }
+                    cur->num_keys--;
+                    return;
+                }
             }
+            // Move to previous leaf
+            if (cur->num_keys > 0 && cur->keys[0] > key) break; // all keys > key, not here
+            cur = cur->prev;
         }
-
-        if (pos == -1) return;
-
-        for (int i = pos; i < leaf->num_keys - 1; i++) {
-            leaf->keys[i] = leaf->keys[i+1];
-            leaf->values[i] = leaf->values[i+1];
-        }
-        leaf->num_keys--;
     }
 
     vector<int> find_all(const string& key) const {
@@ -209,20 +226,30 @@ public:
 
         if (root->is_leaf && root->num_keys == 0) return result;
 
+        // find_leaf returns rightmost leaf. Go backward to find first,
+        // then forward to collect all.
         BPTreeNode* leaf = find_leaf(key);
-        BPTreeNode* cur = leaf;
 
+        // Scan backward to find the first leaf containing this key
+        BPTreeNode* start = leaf;
+        while (start->prev && start->prev->num_keys > 0) {
+            // Check if prev leaf could contain the key
+            // Since leaves are linked in order, if prev leaf's last key < key,
+            // then prev leaf doesn't have the key
+            if (start->prev->keys[start->prev->num_keys - 1] < key) break;
+            start = start->prev;
+        }
+
+        // Now scan forward from start
+        BPTreeNode* cur = start;
         while (cur) {
-            bool found_in_this_leaf = false;
             for (int i = 0; i < cur->num_keys; i++) {
                 if (cur->keys[i] == key) {
                     result.push_back(cur->values[i]);
-                    found_in_this_leaf = true;
+                } else if (cur->keys[i] > key) {
+                    // Since keys are sorted, no more matches in this leaf or later
+                    return result;
                 }
-            }
-            if (!found_in_this_leaf && !result.empty()) break;
-            if (!found_in_this_leaf && result.empty()) {
-                if (cur->num_keys > 0 && cur->keys[cur->num_keys - 1] > key) break;
             }
             cur = cur->next;
         }
