@@ -14,6 +14,7 @@ using namespace std;
 // ============================================================
 
 const int ORDER = 128;
+const int MIN_KEYS = ORDER / 2;  // minimum keys per node (except root)
 
 const char* DATA_FILE = "data.bpt";
 
@@ -127,7 +128,6 @@ private:
     void split_leaf(BPTreeNode* leaf) {
         int mid = ORDER / 2;
 
-        // Adjust mid to avoid splitting equal keys
         while (mid > 0 && leaf->keys[mid - 1] == leaf->keys[mid]) {
             mid--;
         }
@@ -157,6 +157,229 @@ private:
         insert_into_parent(leaf, promote_key, new_leaf);
     }
 
+    // Remove entry at position 'pos' from leaf and rebalance if needed
+    void remove_from_leaf(BPTreeNode* leaf, int pos) {
+        for (int j = pos; j < leaf->num_keys - 1; j++) {
+            leaf->keys[j] = leaf->keys[j+1];
+            leaf->values[j] = leaf->values[j+1];
+        }
+        leaf->num_keys--;
+
+        // Rebalance if needed (not root)
+        if (leaf != root && leaf->num_keys < MIN_KEYS) {
+            rebalance_leaf(leaf);
+        }
+    }
+
+    // Rebalance a leaf that has too few entries
+    void rebalance_leaf(BPTreeNode* leaf) {
+        BPTreeNode* parent = leaf->parent;
+        if (!parent) return;
+
+        // Find leaf's position in parent
+        int pos = 0;
+        while (pos <= parent->num_keys && parent->children[pos] != leaf) {
+            pos++;
+        }
+
+        // Try to borrow from left sibling
+        if (pos > 0) {
+            BPTreeNode* left_sib = parent->children[pos - 1];
+            if (left_sib->num_keys > MIN_KEYS) {
+                // Move last entry from left sibling to this leaf
+                for (int i = leaf->num_keys; i > 0; i--) {
+                    leaf->keys[i] = leaf->keys[i-1];
+                    leaf->values[i] = leaf->values[i-1];
+                }
+                leaf->keys[0] = left_sib->keys[left_sib->num_keys - 1];
+                leaf->values[0] = left_sib->values[left_sib->num_keys - 1];
+                leaf->num_keys++;
+                left_sib->num_keys--;
+
+                // Update parent key
+                parent->keys[pos - 1] = left_sib->keys[left_sib->num_keys - 1];
+                return;
+            }
+        }
+
+        // Try to borrow from right sibling
+        if (pos < parent->num_keys) {
+            BPTreeNode* right_sib = parent->children[pos + 1];
+            if (right_sib->num_keys > MIN_KEYS) {
+                // Move first entry from right sibling to this leaf
+                leaf->keys[leaf->num_keys] = right_sib->keys[0];
+                leaf->values[leaf->num_keys] = right_sib->values[0];
+                leaf->num_keys++;
+
+                for (int i = 0; i < right_sib->num_keys - 1; i++) {
+                    right_sib->keys[i] = right_sib->keys[i+1];
+                    right_sib->values[i] = right_sib->values[i+1];
+                }
+                right_sib->num_keys--;
+
+                // Update parent key
+                parent->keys[pos] = leaf->keys[leaf->num_keys - 1];
+                return;
+            }
+        }
+
+        // Merge with a sibling
+        if (pos > 0) {
+            // Merge with left sibling
+            BPTreeNode* left_sib = parent->children[pos - 1];
+
+            for (int i = 0; i < leaf->num_keys; i++) {
+                left_sib->keys[left_sib->num_keys + i] = leaf->keys[i];
+                left_sib->values[left_sib->num_keys + i] = leaf->values[i];
+            }
+            left_sib->num_keys += leaf->num_keys;
+
+            // Update linked list
+            left_sib->next = leaf->next;
+            if (leaf->next) {
+                leaf->next->prev = left_sib;
+            }
+
+            // Remove leaf from parent
+            delete leaf;
+            remove_key_from_parent(parent, pos - 1);
+        } else if (pos < parent->num_keys) {
+            // Merge with right sibling
+            BPTreeNode* right_sib = parent->children[pos + 1];
+
+            for (int i = 0; i < right_sib->num_keys; i++) {
+                leaf->keys[leaf->num_keys + i] = right_sib->keys[i];
+                leaf->values[leaf->num_keys + i] = right_sib->values[i];
+            }
+            leaf->num_keys += right_sib->num_keys;
+
+            // Update linked list
+            leaf->next = right_sib->next;
+            if (right_sib->next) {
+                right_sib->next->prev = leaf;
+            }
+
+            // Remove right_sib from parent
+            delete right_sib;
+            remove_key_from_parent(parent, pos);
+        }
+    }
+
+    // Remove a key (and corresponding child) from an internal node
+    void remove_key_from_parent(BPTreeNode* node, int pos) {
+        // Remove key at pos and child at pos+1
+        for (int i = pos; i < node->num_keys - 1; i++) {
+            node->keys[i] = node->keys[i+1];
+        }
+        for (int i = pos + 1; i < node->num_keys; i++) {
+            node->children[i] = node->children[i+1];
+        }
+        node->num_keys--;
+
+        // If root is empty, make the only child the new root
+        if (node == root && node->num_keys == 0) {
+            root = node->children[0];
+            root->parent = nullptr;
+            delete node;
+            return;
+        }
+
+        // Rebalance if needed
+        if (node != root && node->num_keys < MIN_KEYS) {
+            rebalance_internal(node);
+        }
+    }
+
+    // Rebalance an internal node
+    void rebalance_internal(BPTreeNode* node) {
+        BPTreeNode* parent = node->parent;
+        if (!parent) return;
+
+        int pos = 0;
+        while (pos <= parent->num_keys && parent->children[pos] != node) {
+            pos++;
+        }
+
+        // Try left sibling
+        if (pos > 0) {
+            BPTreeNode* left_sib = parent->children[pos - 1];
+            if (left_sib->num_keys > MIN_KEYS) {
+                // Rotate: move parent key down, left sibling's last key up
+                for (int i = node->num_keys; i > 0; i--) {
+                    node->keys[i] = node->keys[i-1];
+                }
+                node->keys[0] = parent->keys[pos - 1];
+
+                for (int i = node->num_keys + 1; i > 0; i--) {
+                    node->children[i] = node->children[i-1];
+                }
+                node->children[0] = left_sib->children[left_sib->num_keys];
+                node->children[0]->parent = node;
+                node->num_keys++;
+
+                parent->keys[pos - 1] = left_sib->keys[left_sib->num_keys - 1];
+                left_sib->num_keys--;
+                return;
+            }
+        }
+
+        // Try right sibling
+        if (pos < parent->num_keys) {
+            BPTreeNode* right_sib = parent->children[pos + 1];
+            if (right_sib->num_keys > MIN_KEYS) {
+                // Rotate
+                node->keys[node->num_keys] = parent->keys[pos];
+                node->children[node->num_keys + 1] = right_sib->children[0];
+                node->children[node->num_keys + 1]->parent = node;
+                node->num_keys++;
+
+                parent->keys[pos] = right_sib->keys[0];
+
+                for (int i = 0; i < right_sib->num_keys - 1; i++) {
+                    right_sib->keys[i] = right_sib->keys[i+1];
+                }
+                for (int i = 0; i < right_sib->num_keys; i++) {
+                    right_sib->children[i] = right_sib->children[i+1];
+                }
+                right_sib->num_keys--;
+                return;
+            }
+        }
+
+        // Merge
+        if (pos > 0) {
+            BPTreeNode* left_sib = parent->children[pos - 1];
+
+            left_sib->keys[left_sib->num_keys] = parent->keys[pos - 1];
+            for (int i = 0; i < node->num_keys; i++) {
+                left_sib->keys[left_sib->num_keys + 1 + i] = node->keys[i];
+                left_sib->children[left_sib->num_keys + 1 + i] = node->children[i];
+                node->children[i]->parent = left_sib;
+            }
+            left_sib->children[left_sib->num_keys + 1 + node->num_keys] = node->children[node->num_keys];
+            node->children[node->num_keys]->parent = left_sib;
+            left_sib->num_keys += 1 + node->num_keys;
+
+            delete node;
+            remove_key_from_parent(parent, pos - 1);
+        } else if (pos < parent->num_keys) {
+            BPTreeNode* right_sib = parent->children[pos + 1];
+
+            node->keys[node->num_keys] = parent->keys[pos];
+            for (int i = 0; i < right_sib->num_keys; i++) {
+                node->keys[node->num_keys + 1 + i] = right_sib->keys[i];
+                node->children[node->num_keys + 1 + i] = right_sib->children[i];
+                right_sib->children[i]->parent = node;
+            }
+            node->children[node->num_keys + 1 + right_sib->num_keys] = right_sib->children[right_sib->num_keys];
+            right_sib->children[right_sib->num_keys]->parent = node;
+            node->num_keys += 1 + right_sib->num_keys;
+
+            delete right_sib;
+            remove_key_from_parent(parent, pos);
+        }
+    }
+
 public:
     BPTree() : root(nullptr) {
         root = new BPTreeNode(true);
@@ -179,8 +402,6 @@ public:
     void insert(const string& key, int value) {
         BPTreeNode* leaf = find_leaf(key);
 
-        // Find correct leaf: advance while the next leaf also has this key
-        // and our value is larger than the max value in the current leaf
         BPTreeNode* cur = leaf;
         while (cur->num_keys > 0 && 
                cur->keys[0] == key && cur->keys[cur->num_keys - 1] == key && 
@@ -204,11 +425,7 @@ public:
         while (cur) {
             for (int i = 0; i < cur->num_keys; i++) {
                 if (cur->keys[i] == key && cur->values[i] == value) {
-                    for (int j = i; j < cur->num_keys - 1; j++) {
-                        cur->keys[j] = cur->keys[j+1];
-                        cur->values[j] = cur->values[j+1];
-                    }
-                    cur->num_keys--;
+                    remove_from_leaf(cur, i);
                     return;
                 }
                 if (cur->keys[i] > key) return;
