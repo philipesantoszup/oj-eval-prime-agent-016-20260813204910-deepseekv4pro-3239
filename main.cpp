@@ -38,8 +38,6 @@ class BPTree {
 private:
     BPTreeNode* root;
 
-    // Find the leftmost leaf that could contain the key
-    // Uses > comparison so equal keys go LEFT
     BPTreeNode* find_leaf(const string& key) const {
         BPTreeNode* cur = root;
         while (!cur->is_leaf) {
@@ -130,12 +128,9 @@ private:
         int mid = ORDER / 2;
 
         // Adjust mid to avoid splitting equal keys
-        // The promoted key (last key of left leaf) must be < first key of right leaf
         while (mid > 0 && leaf->keys[mid - 1] == leaf->keys[mid]) {
             mid--;
         }
-        // If all keys are the same, we can't avoid splitting duplicates
-        // In that case, fall back to mid = ORDER/2
         if (mid == 0) {
             mid = ORDER / 2;
         }
@@ -150,10 +145,8 @@ private:
 
         leaf->num_keys = mid;
 
-        // Promote the LAST key of the LEFT leaf
         string promote_key = leaf->keys[leaf->num_keys - 1];
 
-        // Maintain linked list
         new_leaf->next = leaf->next;
         new_leaf->prev = leaf;
         if (leaf->next) {
@@ -186,24 +179,14 @@ public:
     void insert(const string& key, int value) {
         BPTreeNode* leaf = find_leaf(key);
 
-        // Check for duplicate
-        // Since find_leaf returns leftmost and duplicates can't span splits (normally),
-        // we only need to check this leaf and possibly next if all keys were same
+        // Find correct leaf: advance while the next leaf also has this key
+        // and our value is larger than the max value in the current leaf
         BPTreeNode* cur = leaf;
-        while (cur) {
-            for (int i = 0; i < cur->num_keys; i++) {
-                if (cur->keys[i] == key && cur->values[i] == value) {
-                    return;
-                }
-                if (cur->keys[i] > key) goto not_found;
-            }
-            cur = cur->next;
-        }
-        not_found:
-
-        // Find correct leaf for insertion: the rightmost leaf where key belongs
-        cur = leaf;
-        while (cur->next && cur->next->num_keys > 0 && cur->next->keys[0] <= key) {
+        while (cur->num_keys > 0 && 
+               cur->keys[0] == key && cur->keys[cur->num_keys - 1] == key && 
+               cur->next && cur->next->num_keys > 0 && 
+               cur->next->keys[0] == key &&
+               value > cur->values[cur->num_keys - 1]) {
             cur = cur->next;
         }
 
